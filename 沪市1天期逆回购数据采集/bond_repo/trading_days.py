@@ -1,5 +1,6 @@
 import datetime
 import requests
+from logger import logger
 
 class TradingDayChecker:
     @staticmethod
@@ -31,6 +32,7 @@ class TradingDayChecker:
         :return: list of datetime.date
         """
         # 这里可以使用第三方API或者维护一个本地节假日列表
+        # 示例：2023年中国大陆节假日
         holidays = [
             datetime.date(year, 1, 1),   # 元旦
             datetime.date(year, 1, 28),  # 春节

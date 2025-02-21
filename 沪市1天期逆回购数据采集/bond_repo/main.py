@@ -1,3 +1,27 @@
+import sys
+import logging
+from logger import logger
+
+try:
+    logger.info("日志系统初始化开始")
+except:
+    # 如果日志系统初始化失败，使用基本日志配置
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.warning("使用备用日志配置")
+
+# 全局异常处理
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """处理未捕获的异常"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        logger.info("程序被手动中断")
+        sys.exit(0)
+    logger.error("未捕获的异常", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
+
+logger.info("日志系统初始化完成")
+
 import requests
 import sqlite3
 import datetime
@@ -5,76 +29,61 @@ import time
 from config import CONFIG
 from trading_days import TradingDayChecker
 from utils import ScheduleManager
-import sys
+from data_validator import DataValidator
+from database_manager import DatabaseManager
 
-def create_connection():
-    """创建数据库连接"""
-    return sqlite3.connect(CONFIG['db_path'])
+# 初始化数据库管理器
+db_manager = DatabaseManager()
 
 def init_db():
     """初始化数据库"""
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS bond_data (
-        timestamp DATETIME PRIMARY KEY,
-        current_price REAL,
-        open_price REAL,
-        close_price REAL,
-        high_price REAL,
-        low_price REAL,
-        bid_price REAL,
-        ask_price REAL,
-        deal_amount INTEGER,
-        buy_amount INTEGER,
-        sell_amount INTEGER
-    )
-    """
-    with create_connection() as conn:
-        conn.execute(create_table_sql)
-        conn.commit()
+    db_manager.init_db()
 
 def fetch_data():
     """从新浪API获取数据"""
     for attempt in range(CONFIG['retry_times']):
         try:
-            print(f"正在请求API... 尝试次数：{attempt + 1}")
+            logger.debug(f"正在请求API... 尝试次数：{attempt + 1}")
             response = requests.get(
                 CONFIG['api_url'],
                 headers=CONFIG['headers'],
                 timeout=CONFIG['timeout']
             )
-            response.encoding = 'gbk'  # 新浪API使用GBK编码
+            response.encoding = 'gbk'
             
-            # 打印状态码用于调试
-            print(f"HTTP状态码：{response.status_code}")
+            logger.debug(f"HTTP状态码：{response.status_code}")
             
-            # 检查响应状态
             if response.status_code != 200:
-                print(f"API请求失败，状态码：{response.status_code}")
-                time.sleep(1)  # 等待1秒后重试
+                logger.warning(f"API请求失败，状态码：{response.status_code}")
+                time.sleep(6)
                 continue
                 
-            # 打印原始响应用于调试
-            print("API响应内容：", response.text)
+            logger.debug("API响应内容：" + response.text)
             
-            # 更健壮的解析方式
             if '="' not in response.text:
-                print("API返回格式异常")
+                logger.warning("API返回格式异常")
                 continue
                 
             data_str = response.text.split('="')[1].strip('";\n')
             data = data_str.split(',')
-            
-            # 验证数据完整性
-            if len(data) < 10:
-                print(f"数据字段不足，实际获取字段数：{len(data)}")
+
+            # 数据验证
+            is_valid, message = DataValidator.validate(data)
+            if not is_valid:
+                logger.error(f"数据验证失败: {message}")
+                logger.debug(f"原始数据: {data}")
                 continue
                 
             return data
             
+        except requests.exceptions.RequestException as e:
+            logger.error(f"网络请求失败: {str(e)}", exc_info=True)
+            time.sleep(6)
         except Exception as e:
-            print(f"数据获取失败: {str(e)}")
-            time.sleep(1)  # 等待1秒后重试
+            logger.error(f"数据获取失败: {str(e)}", exc_info=True)
+            time.sleep(6)
             
+    logger.error("数据获取重试次数用尽")
     return None
 
 def save_to_db(data):
@@ -88,48 +97,95 @@ def save_to_db(data):
     db_data = (timestamp,) + tuple(data[:10])
     
     try:
-        with create_connection() as conn:
+        with db_manager.get_connection() as conn:
             conn.execute(insert_sql, db_data)
             conn.commit()
-        print(f"{timestamp} 数据保存成功")
+        logger.info(f"{timestamp} 数据保存成功（{'测试模式' if db_manager.is_test_mode else '正式模式'}）")
         return True
     except sqlite3.IntegrityError:
-        print("重复数据，跳过保存")
+        logger.warning("重复数据，跳过保存")
+        return False
+    except sqlite3.Error as e:
+        logger.error(f"数据库操作失败: {str(e)}", exc_info=True)
         return False
 
 def main_loop():
     """主循环"""
     init_db()  # 初始化数据库
     
+    # 初始化统计变量
+    start_time = time.time()
+    data_count = 0
+    api_request_count = 0
+    
     while True:
         # 检查是否在交易时间
         if not ScheduleManager.is_trading_time():
-            print("当前不在交易时间，程序结束")
-            break
-            
+            # 如果是午休时间（11:30-13:00），等待到下午开盘
+            if ScheduleManager.is_midday_break():
+                logger.info("当前是午休时间，等待到下午开盘...")
+                ScheduleManager.wait_until_afternoon()
+                continue
+            else:
+                # 交易日结束（15:30 后），记录汇总日志
+                if ScheduleManager.is_trading_day():
+                    running_time = time.time() - start_time
+                    logger.info(
+                        f"当日汇总 - 运行时间: {running_time:.2f}秒, "
+                        f"获取数据: {data_count}条, "
+                        f"API请求次数: {api_request_count}次"
+                    )
+                logger.info("当前不在交易时间，程序结束")
+                break
+                
         # 采集数据
         raw_data = fetch_data()
+        api_request_count += 1  # 记录 API 请求次数
+        
         if raw_data and len(raw_data) >= 10:
-            save_to_db(raw_data)
+            if save_to_db(raw_data):
+                data_count += 1  # 记录成功获取的数据条数
         else:
-            print("获取到无效数据，等待重试")
+            logger.warning("获取到无效数据，等待重试")
             
-        # 等待到下一分钟
+        # 等待 30 秒
         ScheduleManager.wait_until_next_minute()
 
 if __name__ == "__main__":
-    print("程序启动")
+    logger.info("程序启动")
     
-    # 检查是否为交易日
-    if not TradingDayChecker.is_trading_day():
-        print(f"{datetime.date.today()} 不是交易日，程序正常结束")
-        sys.exit(0)
-        
+    # 初始化数据库管理器
+    db_manager = DatabaseManager()
+    
+    # 如果是正式模式，检查是否为交易日
+    if not db_manager.is_test_mode:
+        if not TradingDayChecker.is_trading_day():
+            logger.info(f"{datetime.date.today()} 不是交易日，程序正常结束")
+            sys.exit(0)
+    
     try:
-        main_loop()
+        # 主循环
+        while True:
+            # 如果是正式模式，检查是否在交易时间
+            if not db_manager.is_test_mode and not ScheduleManager.is_trading_time():
+                logger.info("当前不在交易时间，程序结束")
+                break
+                
+            # 采集数据
+            raw_data = fetch_data()
+            if raw_data and len(raw_data) >= 10:
+                save_to_db(raw_data)
+            else:
+                logger.warning("获取到无效数据，等待重试")
+                
+            # 等待 30 秒
+            ScheduleManager.wait_seconds(30)
+            
     except KeyboardInterrupt:
-        print("程序被手动终止")
+        logger.info("程序被手动终止")
+    except SystemExit:
+        logger.info("程序正常退出")
     except Exception as e:
-        print(f"程序运行出错: {str(e)}")
+        logger.error(f"程序运行出错: {str(e)}", exc_info=True)
     finally:
-        print("程序结束")
+        logger.info("程序结束")
