@@ -55,7 +55,7 @@ def fetch_data():
             
             if response.status_code != 200:
                 logger.warning(f"API请求失败，状态码：{response.status_code}")
-                time.sleep(6)
+                time.sleep(1)
                 continue
                 
             logger.debug("API响应内容：" + response.text)
@@ -66,7 +66,7 @@ def fetch_data():
                 
             data_str = response.text.split('="')[1].strip('";\n')
             data = data_str.split(',')
-
+            
             # 数据验证
             is_valid, message = DataValidator.validate(data)
             if not is_valid:
@@ -78,10 +78,10 @@ def fetch_data():
             
         except requests.exceptions.RequestException as e:
             logger.error(f"网络请求失败: {str(e)}", exc_info=True)
-            time.sleep(6)
+            time.sleep(1)
         except Exception as e:
             logger.error(f"数据获取失败: {str(e)}", exc_info=True)
-            time.sleep(6)
+            time.sleep(1)
             
     logger.error("数据获取重试次数用尽")
     return None
@@ -94,19 +94,22 @@ def save_to_db(data):
     )
     """
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    db_data = (timestamp,) + tuple(data[:10])
+    db_data = (timestamp,) + tuple(data[:11])  # 包含证券代码
     
     try:
         with db_manager.get_connection() as conn:
             conn.execute(insert_sql, db_data)
             conn.commit()
-        logger.info(f"{timestamp} 数据保存成功（{'测试模式' if db_manager.is_test_mode else '正式模式'}）")
+        logger.info(f"{timestamp} 数据保存成功")
         return True
     except sqlite3.IntegrityError:
         logger.warning("重复数据，跳过保存")
         return False
     except sqlite3.Error as e:
         logger.error(f"数据库操作失败: {str(e)}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"保存数据时发生未知错误: {str(e)}", exc_info=True)
         return False
 
 def main_loop():
@@ -118,6 +121,15 @@ def main_loop():
     data_count = 0
     api_request_count = 0
     
+     # 如果是交易日，等待到交易时间
+    if TradingDayChecker.is_trading_day():
+        logger.info("当前是交易日，等待到交易时间...")
+        while not ScheduleManager.is_trading_time():
+            time.sleep(30)  # 每30秒检查一次
+    else:
+        logger.info(f"{datetime.date.today()} 不是交易日，程序正常结束")
+        return
+
     while True:
         # 检查是否在交易时间
         if not ScheduleManager.is_trading_time():
@@ -148,7 +160,7 @@ def main_loop():
         else:
             logger.warning("获取到无效数据，等待重试")
             
-        # 等待 30 秒
+        # 等待 60 秒
         ScheduleManager.wait_until_next_minute()
 
 if __name__ == "__main__":

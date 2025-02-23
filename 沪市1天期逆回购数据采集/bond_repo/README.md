@@ -1,3 +1,7 @@
+新增功能：
+1. 单元测试
+2. 日志轮转
+————————
 #### 新增功能
 1. **日志系统**：
    - 添加了日志记录功能，支持按天分割日志文件。
@@ -48,7 +52,7 @@
     ├── main.py # 主程序
     ├── start.sh # 启动脚本
     ├── requirements.txt # 依赖库
-    ├── trading_days.py # 交易日判断
+    ├── trading_days.py # 交易日判断，节日需手动维护
     ├── utils.py # 工具函数
     ├── data_validator.py # 数据验证
     ├── database_manager.py # 数据库管理

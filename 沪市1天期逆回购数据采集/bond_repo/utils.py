@@ -4,11 +4,11 @@ from logger import logger
 
 class ScheduleManager:
     @staticmethod
-    def is_trading_time():
+    def is_trading_time(current_time=None):
         """判断当前是否在交易时间内"""
-        now = datetime.datetime.now()
-        current_time = now.time()
-        
+        if current_time is None:
+            current_time = datetime.datetime.now().time()
+            
         # 上午交易时段
         morning_start = datetime.time(9, 30)
         morning_end = datetime.time(11, 30)
@@ -19,7 +19,7 @@ class ScheduleManager:
         
         return ((morning_start <= current_time <= morning_end) or 
                 (afternoon_start <= current_time <= afternoon_end))
-
+    
     @staticmethod
     def is_midday_break():
         """判断当前是否是午休时间（11:30-13:00）"""

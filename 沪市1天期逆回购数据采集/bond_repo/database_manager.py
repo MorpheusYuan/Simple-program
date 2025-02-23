@@ -31,9 +31,9 @@ class DatabaseManager:
             low_price REAL,
             bid_price REAL,
             ask_price REAL,
-            deal_amount REAL,  # 改为浮点数
-            buy_amount REAL,   # 改为浮点数
-            sell_amount REAL   # 改为浮点数
+            deal_amount REAL,
+            buy_amount REAL,
+            sell_amount REAL
         )
         """
         with self.get_connection() as conn:
